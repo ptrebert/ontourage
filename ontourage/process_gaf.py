@@ -201,6 +201,7 @@ def process_path_alignments(read_name, node_lengths, edge_lengths, segment_re, a
                 'overlap': edge_length,
                 'source': 'alignment',
                 'quality': row['mapq'],
+                'read_name': read_name,
             }
             supported_edges.append((node_a, node_b, attributes))
             if start_offset == 0:
@@ -237,7 +238,7 @@ def process_path_alignments(read_name, node_lengths, edge_lengths, segment_re, a
     return path_nodes, nodes_per_block, supported_edges, supported_sequences
 
 
-def compute_pairwise_edges(node_lengths, path_nodes, supported_edges, alignments):
+def compute_pairwise_edges(read_name, node_lengths, path_nodes, supported_edges, alignments):
 
     if alignments['read_aln_block'].nunique() == 1:
         return supported_edges
@@ -254,6 +255,8 @@ def compute_pairwise_edges(node_lengths, path_nodes, supported_edges, alignments
                 for (node_a, node_b), (mapq_a, mapq_b) in zip(node_iter, mapq_iter):
                     a_name = node_a[1:]
                     b_name = node_b[1:]
+                    if a_name == b_name:
+                        continue
                     # if both nodes are members of a path, assume
                     # that is the more informative alignment
                     if a_name in path_nodes and b_name in path_nodes:
@@ -268,6 +271,7 @@ def compute_pairwise_edges(node_lengths, path_nodes, supported_edges, alignments
                         'overlap': 0,
                         'source': 'alignment',
                         'quality': (mapq_a + mapq_b) // 2,
+                        'read_name': read_name,
                     }
                     supported_edges.append((a_name, b_name, attributes))
         pairs_done.add((block_a, block_b))
@@ -285,11 +289,6 @@ def process_singleton_alignments(
     alignments
 ):
     """
-    Impossible case:
-    - singleton alignment to a node
-    --- (i) that is also a member of a path
-    --- (ii) the alignment is overlapping a path alignment (same block ID)
-
     Consider cases:
     - true singleton alignment: no overlap, no path member
     - assembly error: no overlap, but path member
@@ -328,6 +327,7 @@ def process_singleton_alignments(
             node_support['align_type'] = 'path_disconnect'
         elif row['read_aln_block'] in nodes_per_block and node_name not in path_nodes:
             # bubble / alternate path, induces new edge
+            node_support['align_type'] = 'connect'
             for node_b, mapq_b in nodes_per_block[row['read_aln_block']]:
                 attributes = {
                     'a_length': node_length,
@@ -337,6 +337,7 @@ def process_singleton_alignments(
                     'overlap': 0,
                     'source': 'alignment',
                     'quality': (row['mapq'] + mapq_b) // 2,
+                    'read_name': read_name
                 }
                 supported_edges.append((node_name, node_b, dict(attributes)))
                 attributes['b_orient'] = -1
@@ -347,6 +348,7 @@ def process_singleton_alignments(
 
     # connect all singleton alignments of different blocks
     supported_edges = compute_pairwise_edges(
+        read_name,
         node_lengths,
         path_nodes,
         supported_edges,
@@ -368,7 +370,7 @@ def process_read_alignments(node_lengths, edge_lengths, segment_re, args):
     read_name, alignments = args
     alignments['path_size'] = alignments['path'].str.count('>') + alignments['path'].str.count('<')
 
-    # enumerate read alignments by query positions (= alignment coodiantes on read)
+    # enumerate read alignments by query positions (= alignment coordinates on read)
     # to check for overlapping alignments that may or may not be meaningful
     alignments = enumerate_overlapping_query_blocks(alignments)
 
@@ -426,8 +428,8 @@ def prepare_cache_files(cache_folder, cache_prefix, ignore_cache):
 
     file_suffix = [
         '.gaf.cache.h5',
-        '.graph-align.cache.h5',
-        '.edges-align.cache.h5',
+        '.graph-align.cache.pck',
+        '.edges-align.cache.pck',
     ]
     cache_names = [
         'gaf-input',
@@ -535,7 +537,7 @@ def prepare_gaf_input(gaf_file_input, gaf_file_cache):
         dtype=column_types,
         converters=converters
     )
-    logger.debug('Dumping GAF alignments to cache file...')
+    logger.debug('Dumping typed GAF alignments to cache file...')
     with pd.HDFStore(gaf_file_cache, 'w', complevel=9) as hdf:
         hdf.put('cache', alignments)
     return alignments
@@ -601,13 +603,13 @@ def load_cached_graph_data(graph_cache):
 
 def cache_alignment_data(alignments, edges, cache_files):
 
-    logger.debug('Dumping edge / link cache...')
-    with open(cache_files['edges-graph'], 'wb') as cache:
+    logger.debug('Dumping alignment-derived edge / link cache...')
+    with open(cache_files['edges-align'], 'wb') as cache:
         pck.dump(edges, cache)
 
-    logger.debug('Dumping alignments cache...')
-    with open(cache_files['node-lengths'], 'wb') as cache:
-        pck.dump(segment_lengths, cache)
+    logger.debug('Dumping processed alignments cache...')
+    with open(cache_files['graph-align'], 'wb') as cache:
+        pck.dump(alignments, cache)
 
     return
 
@@ -636,6 +638,7 @@ def run_process_gaf(args):
             edge_lengths,
             args.num_jobs
         )
+        cache_alignment_data(alignments, edges, cache_files)
     else:
         logger.warning(
             'Graph alignment cache seems complete and "ignore cache" is not set. '
