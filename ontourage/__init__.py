@@ -5,10 +5,10 @@ ORIENTATION_MAP = {
     '>': 1,
     '<': -1,
     '+': 1,
-    '-': -1
+    '-': -1,
 }
 
-GRAPH_SEGMENT_REGEXP = '(\<|\>)[a-zA-Z0-9\-_]+'
+SEGMENT_ORIENTATION_SYMBOLS = '(<|>)'
 
 GAF_DEFAULT_COLUMNS = [
     'read_name',

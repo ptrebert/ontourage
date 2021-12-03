@@ -1,7 +1,5 @@
-import sys
 import collections as col
 import argparse as argp
-import operator as op
 import pathlib as pl
 import functools as fnt
 import logging as logging
@@ -15,13 +13,14 @@ import xopen
 import networkx as nx
 
 from ontourage import ORIENTATION_MAP
+from ontourage.structs import Node, Edge
 
 logger = logging.getLogger()
 
 
 def process_gfa_cli_parser(module_parsers):
 
-    name = 'graph'
+    name = 'process-graph'
     desc = 'Process a GFAv1 input graph and cache its data'
 
     if module_parsers is None:
@@ -83,6 +82,28 @@ def process_gfa_cli_parser(module_parsers):
         dest="ignore_cache",
         help="Ignore existing cached data and rerun everything."
     )
+    io_group.add_argument(
+        "--cache-tables",
+        "-ctab",
+        action="store_true",
+        default=False,
+        dest="cache_tables",
+        help="In addition to the cache dump in Python's pickle format, dump Edge and Node informaton "
+             "also as Pandas DataFrames (HDF files) for easier post-processing with "
+             "other tools/libraries. Default: False"
+    )
+
+    process_group = parser.add_argument_group('Data processing')
+
+    process_group.add_argument(
+        "--no-sequence-stats",
+        "-noss",
+        default=False,
+        action="store_true",
+        dest="no_seq_stats",
+        help="If the input graph (GFA file) contains node/segment sequences, do not compute "
+             "sequence composition statistics (much faster). Default: False"
+    )
 
     parser.set_defaults(execute=run_process_gfa)
     if module_parsers is None:
@@ -112,18 +133,22 @@ def convert_cache_limit(user_input):
     return cache_limit
 
 
-def get_segment_parser(use_column):
+def get_segment_parser(use_column, no_seq_stats):
     if use_column == 2:
-        return parse_segment_line_has_seq
+        return fnt.partial(parse_segment_line_has_seq, no_seq_stats)
     else:
         return fnt.partial(parse_segment_line_no_seq, use_column)
 
 
-def parse_segment_line_has_seq(segment_line):
+def parse_segment_line_has_seq(no_seq_stats, segment_line):
 
     _, segment_name, segment_sequence = segment_line.split('\t')[:3]
-    segment_length = len(segment_sequence)
-    return segment_name, segment_sequence, segment_length
+    if no_seq_stats:
+        node = Node(segment_name, len(segment_sequence))
+    else:
+        node = Node(segment_name)
+        node.add_sequence_composition(segment_sequence)
+    return node, segment_sequence
 
 
 def parse_segment_line_no_seq(ln_tag_position, segment_line):
@@ -131,7 +156,8 @@ def parse_segment_line_no_seq(ln_tag_position, segment_line):
     segment_info = segment_line.split('\t')
     segment_name = segment_info[1]
     segment_length = int(segment_info[ln_tag_position].split(':')[-1])
-    return segment_name, '', segment_length
+    node = Node(segment_name, segment_length)
+    return node, None
 
 
 def check_gfa_has_sequence(gfa_file_path):
@@ -150,7 +176,7 @@ def check_gfa_has_sequence(gfa_file_path):
 
     has_sequence = inspect_line[2] != '*'
     if not has_sequence:
-        logger.warning('GFA file does not seem not to contain segment sequences')
+        logger.warning('GFA file does not contain segment sequences - checking for LN tag...')
         # check if we find the LN tag - sequence length is required for certain operations
         tag_ln_column = None
         for pos, item in enumerate(inspect_line):
@@ -160,6 +186,7 @@ def check_gfa_has_sequence(gfa_file_path):
         if tag_ln_column is None:
             raise ValueError('No sequence and no LN tag detected - sequence length information is required')
     else:
+        logger.debug('GFA file contains sequences')
         tag_ln_column = 2
     return has_sequence, tag_ln_column
 
@@ -170,7 +197,8 @@ def parse_link_line(link_line):
     a_orient = ORIENTATION_MAP[a_orient]
     b_orient = ORIENTATION_MAP[b_orient]
     overlap = int(overlap.strip('M'))  # only support "(M)atch" in CIGAR string
-    return a_node, a_orient, b_node, b_orient, overlap
+    edge = Edge(a_node, a_orient, b_node, b_orient, overlap, -1)
+    return edge
 
 
 def prepare_cache_files(cache_folder, cache_prefix, gfa_has_sequence, ignore_cache):
@@ -180,11 +208,13 @@ def prepare_cache_files(cache_folder, cache_prefix, gfa_has_sequence, ignore_cac
         '.node-lengths.cache.pck',
         '.edge-lengths.cache.pck',
         '.edges-graph.cache.pck',
+        '.nodes-graph.cache.pck'
     ]
     cache_names = [
         'node-lengths',
         'edge-lengths',
         'edges-graph',
+        'nodes-graph'
     ]
     if gfa_has_sequence:
         file_suffix.append('.sequences.cache')
@@ -224,27 +254,17 @@ def prepare_cache_files(cache_folder, cache_prefix, gfa_has_sequence, ignore_cac
     return cache_files, incomplete
 
 
-def process_gfa_line(seq_column, gfa_line):
+def process_gfa_line(seq_column, no_seq_stats, gfa_line):
 
     if gfa_line[0] == 'S':
-        segment_parser = get_segment_parser(seq_column)
-        line_type = 'segment'
-        # name, sequence, length
-        result = segment_parser(gfa_line)
+        segment_parser = get_segment_parser(seq_column, no_seq_stats)
+        node, node_sequence = segment_parser(gfa_line)
+        return node, node_sequence
     elif gfa_line[0] == 'L':
-        line_type = 'link'
-        a_node, a_orient, b_node, b_orient, overlap = parse_link_line(gfa_line)
-        attributes = {
-            'a_orient': a_orient,
-            'b_orient': b_orient,
-            'overlap': overlap,
-            'source': 'graph',
-            'quality': -1
-        }
-        result = a_node, b_node, attributes
+        edge = parse_link_line(gfa_line)
+        return edge, None
     else:
         raise ValueError(f'Unknown GFA line type {gfa_line.strip()}')
-    return line_type, result
 
 
 def read_gfa_input(gfa_file_path):
@@ -265,69 +285,132 @@ def cache_segment_sequences(cache_file, cache_flag, sequences):
     return
 
 
-def process_gfa_input(gfa_file_path, seq_column, seq_cache_file, num_jobs, cache_limit):
+def process_gfa_input(gfa_file_path, seq_column, no_seq_stats, seq_cache_file, num_jobs, cache_limit):
     """
     The current implementation only works if segments precede links
     in the input GFA (to add the segment length info to the links)
     """
 
-    process_line = fnt.partial(process_gfa_line, seq_column)
+    process_line = fnt.partial(process_gfa_line, seq_column, no_seq_stats)
 
     segment_lengths = dict()
     edge_lengths = dict()
     sequences = dict()
     edges = []
+    nodes = []
     cached_sequence_length = 0
     sequence_cache_flag = 'c'
     processed_records = col.Counter()
 
     with mp.Pool(num_jobs) as pool:
         resit = pool.imap_unordered(process_line, read_gfa_input(gfa_file_path))
-        for line_type, result in resit:
+        for item, node_seq in resit:
             processed_records['total'] += 1
             if processed_records['total'] % 1000 == 0:
                 logger.debug(f'Processed {processed_records["total"]} GFA records')
-            if line_type == 'segment':
-                processed_records['segment'] += 1
-                name, sequence, length = result
-                segment_lengths[name] = length
-                sequences[name] = sequence
-                cached_sequence_length += len(sequence)
+            if isinstance(item, Node):
+                processed_records['segment/node'] += 1
+                segment_lengths[item.name] = item.length
+                if node_seq is not None:
+                    sequences[item.name] = node_seq
+                    cached_sequence_length += len(node_seq)
                 if cached_sequence_length > cache_limit:
                     logger.debug(f'Caching sequences (~{cached_sequence_length//1024**2} MB)...')
                     cache_segment_sequences(seq_cache_file, sequence_cache_flag, sequences)
                     sequences = dict()
                     cached_sequence_length = 0
                     sequence_cache_flag = 'a'
-            elif line_type == 'link':
-                processed_records['link'] += 1
-                a, b, attributes = result
-                attributes['a_length'] = segment_lengths[a]
-                attributes['b_length'] = segment_lengths[b]
-                edges.append((a, b, attributes))
-                edge_lengths[(a, attributes['a_orient'], b, attributes['b_orient'])] = attributes['overlap']
+                nodes.append(item)
+            elif isinstance(item, Edge):
+                processed_records['link/edge'] += 1
+                edges.append(item)
+                edge_lengths[item._id] = item.length
             else:
-                raise ValueError(f'Unexpected GFA line type: {line_type}')
-    logger.debug(f"GFA processed - {processed_records['segment']} segments and {processed_records['link']} links")
+                item_type = type(item)
+                raise ValueError(f'Unexpected GFA line type: {item_type}')
+    logger.debug(f"GFA processed - {processed_records['segment/node']} segments and {processed_records['link/edge']} links")
     if cached_sequence_length > 0:
         logger.debug(f'Caching remaining sequences (~{cached_sequence_length//1024**2} MB)...')
         cache_segment_sequences(seq_cache_file, sequence_cache_flag, sequences)
-    return segment_lengths, edge_lengths, edges
+    return nodes, edges, segment_lengths, edge_lengths
 
 
-def cache_graph_data(segment_lengths, edge_lengths, edges, cache_files):
+def cache_graph_data(nodes, node_lengths, edges, edge_lengths, cache_files, dump_tables):
+
+    logger.debug('Dumping node / segment cache...')
+    with open(cache_files['nodes-graph'], 'wb') as cache:
+        pck.dump(nodes, cache)
+    if dump_tables:
+        logger.debug('Dumping node / segment cache as HDF/table...')
+        hdf_path = cache_files['nodes-graph'].with_suffix('.h5')
+        with pd.HDFStore(hdf_path, 'w', complevel=9) as hdf:
+            dump_df = pd.DataFrame.from_records([n.as_dict() for n in nodes])
+            hdf.put('cache', dump_df, format='fixed')
 
     logger.debug('Dumping edge / link cache...')
     with open(cache_files['edges-graph'], 'wb') as cache:
         pck.dump(edges, cache)
+    if dump_tables:
+        logger.debug('Dumping edge / link cache as HDF/table...')
+        hdf_path = cache_files['edges-graph'].with_suffix('.h5')
+        with pd.HDFStore(hdf_path, 'w', complevel=9) as hdf:
+            dump_df = pd.DataFrame.from_records([e.as_dict() for e in edges])
+            hdf.put('cache', dump_df, format='fixed')
 
     logger.debug('Dumping node / segment length cache...')
     with open(cache_files['node-lengths'], 'wb') as cache:
-        pck.dump(segment_lengths, cache)
+        pck.dump(node_lengths, cache)
 
     logger.debug('Dumping edge / link length cache...')
     with open(cache_files['edge-lengths'], 'wb') as cache:
         pck.dump(edge_lengths, cache)
+    return
+
+
+def annotate_graph_nodes(nodes, edges):
+    """
+    Annotate graph nodes with their connected component
+    id and cardinality, and their local node betweenness centrality
+    (local = within the connected component).
+    For this annotation/computation, the edge direction
+    is ignored
+    """
+    logger.debug('Annotating nodes in graph')
+    g = nx.Graph()
+    logger.debug('Adding edges to graph...')
+    g.add_edges_from([(e.node_a, e.node_b) for e in edges])
+    logger.debug('Computing node betweeness centrality...')
+    cc_members = dict()
+    node_centralities = dict()
+    cc_sizes = dict()
+    for cc_id, cc_nodes in enumerate(nx.connected_components(g), start=0):
+        subgraph = g.subgraph(cc_nodes).copy()
+        centralities = nx.betweenness_centrality(subgraph, normalized=True, endpoints=True)
+        cc_members.update(dict((n, cc_id) for n in cc_nodes))
+        cc_sizes[cc_id] = len(cc_nodes)
+        node_centralities.update(centralities)
+    logger.debug('Computing node degrees...')
+    degrees = col.defaultdict(col.Counter)
+    for e in edges:
+        degrees[e.node_a][('out', e.a_orientation)] += 1
+        degrees[e.node_b][('in', e.b_orientation)] += 1
+    logger.debug('Updating node information...')
+    # networkx does not count isolated nodes as connected components
+    # manually add CC IDs for these cases
+    manual_cc_id = cc_id + 1
+    for n in nodes:
+        n.set_node_degree(degrees[n.name])
+        try:
+            n.cc_id = cc_members[n.name]
+        except KeyError:
+            n.cc_id = manual_cc_id
+            n.cc_cardinality = 1
+            n.centrality = 1
+            manual_cc_id += 1
+        else:
+            n.cc_cardinality = cc_sizes[n.cc_id]
+            n.centrality = node_centralities[n.name]
+    logger.debug('Annotation of graph nodes completed')
     return
 
 
@@ -351,14 +434,16 @@ def run_process_gfa(args):
         seq_cache = cache_files['sequences']
 
     if args.ignore_cache or cache_incomplete:
-        segment_lengths, edge_lengths, edges = process_gfa_input(
+        nodes, edges, node_lengths, edge_lengths = process_gfa_input(
             args.graph,
             seq_column,
+            args.no_seq_stats,
             seq_cache,
             args.num_jobs,
             args.cache_limit
         )
-        cache_graph_data(segment_lengths, edge_lengths, edges, cache_files)
+        annotate_graph_nodes(nodes, edges)
+        cache_graph_data(nodes, node_lengths, edges, edge_lengths, cache_files, args.cache_tables)
     else:
         logger.warning(
             'Graph cache seems complete and "ignore cache" is not set. '
