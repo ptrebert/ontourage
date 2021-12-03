@@ -153,7 +153,7 @@ class Edge:
             'edge_source': edge_source
         }
         full_kwargs.update(kwargs)
-        edge = Edge(**kwargs)
+        edge = Edge(**full_kwargs)
         return edge
 
 
@@ -177,12 +177,11 @@ class NodeSupport:
         return astuple(self)
 
     def as_prefixed_record(self, prefix, read_align_start, read_align_end):
-
         record = dict((f'{prefix}_{key.replace("support", "align")}', val) for key, val in asdict(self).items())
-        record[f'node_{prefix}'] = record['name']
+        record[f'node_{prefix}'] = self.name
         record[f'{prefix}_read_align_start'] = read_align_start
         record[f'{prefix}_read_align_end'] = read_align_end
-        del record['name']
+        del record[f'{prefix}_name']
         return record
 
 
@@ -212,11 +211,11 @@ class IssueRecord:
     b_align_bp: int
     b_align_pct: float
     b_align_quality: int
-    description = str
-    ovl_read_space_bp = int
-    ovl_read_space_pct = float
-    ovl_node_space_bp = int
-    ovl_node_space_pct = float
+    description: str
+    ovl_read_space_bp: int
+    ovl_read_space_pct: float
+    ovl_node_space_bp: int
+    ovl_node_space_pct: float
 
     def as_dict(self):
         return asdict(self)
