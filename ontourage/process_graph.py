@@ -104,6 +104,15 @@ def process_gfa_cli_parser(module_parsers):
         help="If the input graph (GFA file) contains node/segment sequences, do not compute "
              "sequence composition statistics (much faster). Default: False"
     )
+    process_group.add_argument(
+        "--no-length-checking",
+        "-nolc",
+        default=False,
+        action="store_true",
+        dest="no_length_check",
+        help="Skip checking the length of links/edges in the graph to ensure that they are "
+             "at least 1 bp shorter than the shortest node they connect. Default: False"
+    )
 
     parser.set_defaults(execute=run_process_gfa)
     if module_parsers is None:
@@ -161,13 +170,27 @@ def parse_segment_line_no_seq(ln_tag_position, segment_line):
 
 
 def check_gfa_has_sequence(gfa_file_path):
+    """
+    Besides checking for node sequences in the GFA,
+    also checks that iff a header line is present,
+    it specifies a GFAv1 format for the file.
+    Otherwise, be lenient with accepting quirky
+    input files because... bioinformatics...
+    """
 
     with xopen.xopen(gfa_file_path, 'rt') as graph:
         while 1:
             inspect_line = graph.readline()
-            if not inspect_line.strip() or inspect_line[0] in ['#', 'H']:
+            if not inspect_line.strip():
                 continue
-            break
+            elif inspect_line[0] == '#':
+                continue
+            elif inspect_line[0] == 'H':
+                if 'VN:Z:1.0' not in inspect_line:
+                    raise ValueError(f'Header field does not specify a GFAv1 format file: {inspect_line.strip()}')
+            else:
+                # should be the first segment/node entry
+                break
     if inspect_line[0] != 'S':
         raise ValueError(f'Expect first graph entry to be a segment / node / "S", and not: {inspect_line[:5]}')
     inspect_line = inspect_line.strip().split('\t')
@@ -367,7 +390,23 @@ def cache_graph_data(nodes, node_lengths, edges, edge_lengths, cache_files, dump
     return
 
 
-def annotate_graph_nodes(nodes, edges):
+def compute_connected_component_stats(args):
+    cc_id, cc_graph = args
+    centralities = nx.betweenness_centrality(cc_graph, normalized=True, endpoints=True)
+    cc_members = dict((n, cc_id) for n in cc_graph.nodes)
+    cc_size = len(cc_members)
+    return cc_id, cc_size, cc_members, centralities
+
+
+def iterate_numbered_connected_components(graph):
+
+    for cc_id, cc_nodes in enumerate(nx.connected_components(graph), start=0):
+        subgraph = graph.subgraph(cc_nodes).copy()
+        yield cc_id, subgraph
+    return
+
+
+def annotate_graph_nodes(nodes, edges, jobs):
     """
     Annotate graph nodes with their connected component
     id and cardinality, and their local node betweenness centrality
@@ -383,12 +422,12 @@ def annotate_graph_nodes(nodes, edges):
     cc_members = dict()
     node_centralities = dict()
     cc_sizes = dict()
-    for cc_id, cc_nodes in enumerate(nx.connected_components(g), start=0):
-        subgraph = g.subgraph(cc_nodes).copy()
-        centralities = nx.betweenness_centrality(subgraph, normalized=True, endpoints=True)
-        cc_members.update(dict((n, cc_id) for n in cc_nodes))
-        cc_sizes[cc_id] = len(cc_nodes)
-        node_centralities.update(centralities)
+    with mp.Pool(jobs) as pool:
+        resit = pool.imap_unordered(compute_connected_component_stats, iterate_numbered_connected_components(g))
+        for cc_id, cc_size, cc_nodes, centralities in resit:
+            node_centralities.update(centralities)
+            cc_members.update(cc_nodes)
+            cc_sizes[cc_id] = cc_size
     logger.debug('Computing node degrees...')
     degrees = col.defaultdict(col.Counter)
     for e in edges:
@@ -411,6 +450,28 @@ def annotate_graph_nodes(nodes, edges):
             n.cc_cardinality = cc_sizes[n.cc_id]
             n.centrality = node_centralities[n.name]
     logger.debug('Annotation of graph nodes completed')
+    return
+
+
+def check_edge_length_consistency(edges, node_lengths):
+
+    for e in edges:
+        length_a = node_lengths[e.node_a]
+        length_b = node_lengths[e.node_b]
+        err_msg = f'A {e.node_a}/{length_a} - B {e.node_b}/{length_b} - edge length {e.length}'
+        if length_a <= e.length and length_b <= e.length:
+            # that would be pretty messed up...
+            logger.warning(f'Nodes contain each other - you should check this: {err_msg}')
+            e.error_type = 'mutually_contained'
+        elif length_a <= e.length:
+            logger.warning(f'B contains A: {err_msg}')
+            e.error_type = 'B_contains_A'
+        elif length_b <= e.length:
+            logger.warning(f'A contains B: {err_msg}')
+            e.error_type = 'A_contains_B'
+        else:
+            # should be fine
+            continue
     return
 
 
@@ -442,7 +503,10 @@ def run_process_gfa(args):
             args.num_jobs,
             args.cache_limit
         )
-        annotate_graph_nodes(nodes, edges)
+        annotate_graph_nodes(nodes, edges, args.num_jobs)
+        if not args.no_length_check:
+            logger.debug('Checking link/edge length consistency...')
+            check_edge_length_consistency(edges, node_lengths)
         cache_graph_data(nodes, node_lengths, edges, edge_lengths, cache_files, args.cache_tables)
     else:
         logger.warning(

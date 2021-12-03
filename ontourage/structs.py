@@ -49,6 +49,8 @@ class Node:
             raise ValueError(f"Node length cannot be negative: {self.length}")
         if self.sequence_md5 is not None and self.length == 0:
             raise ValueError(f"Sequence MD5 checksum is set, but node [sequence] length is 0: [MD5] {self.sequence_md5}")
+        if self.sequence_md5 is None:
+            self.sequence_md5 = 'n/a'  # avoid that None needs to be dumped as DataFrame/HDF
 
     def add_sequence_composition(self, sequence):
         self.sequence_md5 = hlib.md5(sequence.encode('ascii')).hexdigest()
