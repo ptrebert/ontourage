@@ -136,6 +136,35 @@ class Edge:
     def as_tuple(self):
         return astuple(self)
 
+    def as_nx_edge(self, oriented=True, add_quality=False, add_source=False):
+        edge_attributes = {'key': self._id, 'length': self.length}
+        if add_quality:
+            edge_attributes['quality'] = self.quality
+        if add_source:
+            edge_attributes['source'] = self.edge_source
+        node_a = self.node_a
+        node_b = self.node_b
+        if oriented:
+            node_a = f"{node_a}{'+' if self.a_orientation > 0 else '-'}"
+            node_b = f"{node_b}{'+' if self.b_orientation > 0 else '-'}"
+        return node_a, node_b, edge_attributes
+
+    def flip(self):
+        e = Edge(
+            self.node_b, self.b_orientation, self.node_a, self.a_orientation,
+            self.length, self.quality, self.read_name,
+            self.edge_source, self.edge_type, self.error_type
+        )
+        return e
+
+    def cross_flip(self):
+        e = Edge(
+            self.node_b, self.a_orientation, self.node_a, self.b_orientation,
+            self.length, self.quality, self.read_name,
+            self.edge_source, self.edge_type, self.error_type
+        )
+        return e
+
     @staticmethod
     def make_edge(node_a, node_b, kwargs):
         quality = (node_a.support_quality + node_b.support_quality) // 2

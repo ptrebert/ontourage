@@ -109,7 +109,6 @@ def process_gaf_cli_parser(module_parsers):
              "'cache prefix' plus the extension '.issues.tsv.gz' as file name: Default: <empty>"
     )
 
-
     parser.set_defaults(execute=run_process_gaf)
     if module_parsers is None:
         return parser
@@ -716,7 +715,7 @@ def cache_alignment_data(node_support, edges, cache_files, dump_tables):
         pck.dump(edges, cache)
     if dump_tables:
         logger.debug('Dumping alignment-derived edge cache as HDF/table...')
-        hdf_path = cache_files['node-support'].with_suffix('.h5')
+        hdf_path = cache_files['edges-align'].with_suffix('.h5')
         with pd.HDFStore(hdf_path, 'w', complevel=9) as hdf:
             dump_df = pd.DataFrame.from_records(e.as_dict() for e in edges)
             hdf.put('cache', dump_df, format='fixed')

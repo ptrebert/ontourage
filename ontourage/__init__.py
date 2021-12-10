@@ -8,6 +8,19 @@ ORIENTATION_MAP = {
     '-': -1,
 }
 
+REVERSE_ORIENTATION_MAP = {
+    1: '+',
+    -1: '-'
+}
+
+REVCOMP_MAPPING = {
+    'A': 'T',
+    'C': 'G',
+    'G': 'C',
+    'T': 'A'
+}
+REVCOMP_MAPPING.update({k.lower(): v.lower() for k, v in REVCOMP_MAPPING.items()})
+
 SEGMENT_ORIENTATION_SYMBOLS = '(<|>)'
 
 GAF_DEFAULT_COLUMNS = [

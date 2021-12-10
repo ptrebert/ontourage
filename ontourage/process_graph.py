@@ -152,6 +152,7 @@ def get_segment_parser(use_column, no_seq_stats):
 def parse_segment_line_has_seq(no_seq_stats, segment_line):
 
     _, segment_name, segment_sequence = segment_line.split('\t')[:3]
+    segment_sequence = segment_sequence.strip()
     if no_seq_stats:
         node = Node(segment_name, len(segment_sequence))
     else:
@@ -219,7 +220,7 @@ def parse_link_line(link_line):
     a_node, a_orient, b_node, b_orient, overlap = link_line.split('\t')[1:6]
     a_orient = ORIENTATION_MAP[a_orient]
     b_orient = ORIENTATION_MAP[b_orient]
-    overlap = int(overlap.strip('M'))  # only support "(M)atch" in CIGAR string
+    overlap = int(overlap.strip().strip('M'))  # only support "(M)atch" in CIGAR string
     edge = Edge(a_node, a_orient, b_node, b_orient, overlap, -1)
     return edge
 

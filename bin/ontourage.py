@@ -11,6 +11,7 @@ sys.path.insert(0, '/home/local/work/code/github/ontourage')
 from ontourage import LOG_MESSAGE_FORMAT as logging_format
 from ontourage.process_graph import process_gfa_cli_parser
 from ontourage.process_align import process_gaf_cli_parser
+from ontourage.extract_seq import extract_seq_cli_parser
 
 
 def parse_command_line():
@@ -57,6 +58,7 @@ def add_sub_parsers(main_parser):
     )
     subparsers = process_gfa_cli_parser(subparsers)
     subparsers = process_gaf_cli_parser(subparsers)
+    subparsers = extract_seq_cli_parser(subparsers)
     return main_parser
 
 
