@@ -5,10 +5,8 @@ import argparse as argp
 import logging
 import traceback
 
-# JUST FOR DEV/DBG
-sys.path.insert(0, '/home/local/work/code/github/ontourage')
-
-from ontourage import LOG_MESSAGE_FORMAT as logging_format
+from ontourage import __version__
+from ontourage.constants import LOG_MESSAGE_FORMAT as logging_format
 from ontourage.process_graph import process_gfa_cli_parser
 from ontourage.process_align import process_gaf_cli_parser
 from ontourage.extract_seq import extract_seq_cli_parser
@@ -18,7 +16,7 @@ def parse_command_line():
 
     parser = argp.ArgumentParser(prog='ONTourage', add_help=True)
 
-    # parser.add_argument("--version", "-v", action="version", version=__version__)
+    parser.add_argument("--version", "-v", action="version", version=__version__)
 
     noise_level = parser.add_mutually_exclusive_group(required=False)
     noise_level.add_argument(
@@ -62,7 +60,8 @@ def add_sub_parsers(main_parser):
     return main_parser
 
 
-if __name__ == "__main__":
+def run_ontourage():
+    exit_code = 0
     parser = parse_command_line()
     args = parser.parse_args()
     if args.debug:
@@ -79,8 +78,14 @@ if __name__ == "__main__":
         if 'execute' in str(attr_error):
             parser.print_help()
             sys.stderr.write('\nPlease select a valid command to execute.\n')
+            exit_code = 2
         else:
             raise
     except Exception:
         traceback.print_exc()
         raise
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(run_ontourage())

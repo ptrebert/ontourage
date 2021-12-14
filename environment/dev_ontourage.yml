@@ -1,0 +1,15 @@
+name: ontourage-dev
+dependencies:
+  - Python=3.7.*
+  - pip
+  - numpy
+  - pandas
+  - pytables
+  - networkx
+  - xopen
+  - python-isal
+  - pigz
+  - dnaio
+  - setuptools
+  - wheel
+  - versioneer
