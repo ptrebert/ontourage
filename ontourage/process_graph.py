@@ -12,7 +12,7 @@ import pandas as pd
 import xopen
 import networkx as nx
 
-from ontourage import ORIENTATION_MAP
+from ontourage.constants import ORIENTATION_MAP
 from ontourage.structs import Node, Edge
 
 logger = logging.getLogger()

@@ -11,10 +11,9 @@ import io
 import networkx as nx
 import pandas as pd
 
-from ontourage import REVCOMP_MAPPING
+from ontourage.constants import REVCOMP_TABLE
 from ontourage.structs import Edge
 
-REVCOMP_TABLE = str.maketrans(REVCOMP_MAPPING)
 
 logger = logging.getLogger()
 

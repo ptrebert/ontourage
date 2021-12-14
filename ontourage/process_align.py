@@ -12,7 +12,7 @@ import hashlib
 import pandas as pd
 import xopen
 
-from ontourage import GAF_DEFAULT_COLUMN_TYPE_MAP, ORIENTATION_MAP, GAF_DEFAULT_COLUMNS, SEGMENT_ORIENTATION_SYMBOLS
+from ontourage.constants import GAF_DEFAULT_COLUMN_TYPE_MAP, ORIENTATION_MAP, GAF_DEFAULT_COLUMNS, SEGMENT_ORIENTATION_SYMBOLS
 from ontourage.structs import Edge, NodeSupport, IssueRecord
 
 
