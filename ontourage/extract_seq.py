@@ -12,7 +12,6 @@ import networkx as nx
 import pandas as pd
 
 from ontourage.constants import REVCOMP_TABLE
-from ontourage.structs import Edge
 
 
 logger = logging.getLogger()
@@ -88,8 +87,9 @@ def extract_seq_cli_parser(module_parsers):
         action="store_true",
         default=False,
         dest="split_fasta",
-        help="Write one FASTA per extracted path sequence. In that case, '--output-fasta' is "
-             "interpreted as an output folder. Default: False"
+        help=argp.SUPPRESS
+        # help="Write one FASTA per extracted path sequence. In that case, '--output-fasta' is "
+        #     "interpreted as an output folder. Default: False"
     )
 
     process_group = parser.add_argument_group('Data processing')
@@ -107,13 +107,15 @@ def extract_seq_cli_parser(module_parsers):
     )
 
     process_group.add_argument(
-        "--connect-sinks",
-        "-cs",
+        "--add-inverted-edges",
+        "-inv",
         action="store_true",
         default=False,
-        dest="connect_sinks",
-        help="If a node is a sink (out degree zero, in degree non-zero), invert all "
-             "incoming edges and add these to the graph, too. Default: False"
+        dest="add_inverted_edges",
+        help="For each edge in the graph, add its reversed complement also to the graph, "
+             "e.g., for the edge A+ to B-, also add the edge B+ to A- "
+             "(only if the added edge is not yet part of the graph) "
+             "Default: False"
     )
 
     process_group.add_argument(
@@ -236,78 +238,55 @@ def check_required_cache_files(cache_folder, cache_prefix, required_suffix, requ
     return required_caches
 
 
-def is_sink_node(node):
-    return node.deg_total > 0 and node.deg_out_plus == 0 and node.deg_out_minus == 0
+def build_any_graph(graph_node_cache, graph_edge_cache, add_inverted_edges, directed):
 
+    # for the future...
+    omit_nodes = []
 
-def build_directed_graph(graph_node_cache, graph_edge_cache, connect_sinks):
+    if directed:
+        graph = nx.DiGraph()
+        log_type = 'Directed'
+    else:
+        graph = nx.Graph()
+        log_type = 'Undirected'
 
-    graph = nx.DiGraph()
     with open(graph_edge_cache, 'rb') as dump:
         graph_edges = pkl.load(dump)
-    logger.debug(f"Loaded {len(graph_edges)} edges from cache")
-    if not connect_sinks:
-        graph.add_edges_from([e.as_nx_edge() for e in graph_edges])
-    else:
-        logger.debug("Fully connecting sink nodes...")
-        logger.debug("Loading cached node data...")
-        with open(graph_node_cache, 'rb') as dump:
-            graph_nodes = {n.name: n for n in pkl.load(dump)}
-        for edge in graph_edges:
-            a, b, attr = edge.as_nx_edge()
-            if is_sink_node(graph_nodes[edge.node_b]):
-                inv_a, inv_b, inv_attr = edge.flip().as_nx_edge()
-                logger.debug(f"Connecting sink via flip: {inv_a} => {inv_b} | {inv_attr}")
-                graph.add_edge(inv_a, inv_b, **inv_attr)
-                if inv_a[-1] != inv_b[-1]:
-                    cross_a, cross_b, cross_attr = edge.cross_flip().as_nx_edge()
-                    logger.debug(f"Connecting sink via cross-flip: {cross_a} => {cross_b} | {cross_attr}")
-                    graph.add_edge(cross_a, cross_b, **cross_attr)
-            graph.add_edge(a, b, **attr)
-    logger.debug(f'Directected Graph built complete. Graph size: {graph.size()}')
-    return graph
 
+    logger.debug(f'Loaded {len(graph_edges)} edges from graph cache...')
+    if omit_nodes:
+        graph_edges = [e for e in graph_edges if e.node_a not in omit_nodes and e.node_b not in omit_nodes]
+        logger.debug(f'{len(omit_nodes)} nodes to be omitted from graph, leaving {len(graph_edges)} edges intact')
 
-def needs_self_connect(node):
-    """
-    For undirected graphs
-    """
-    not_singleton = node.deg_total > 0
-    plus_in_no_out = (node.deg_in_plus > 0) & (node.deg_out_plus == 0)
-    plus_out_no_in = (node.deg_in_plus == 0) & (node.deg_out_plus > 0)
-    minus_in_no_out = (node.deg_in_minus > 0) & (node.deg_out_minus == 0)
-    minus_out_no_in = (node.deg_in_minus == 0) & (node.deg_out_minus > 0)
-    blocked_source = plus_out_no_in & minus_out_no_in
-    blocked_sink = plus_in_no_out & minus_in_no_out
-    return not_singleton & (blocked_source | blocked_sink)
+    with open(graph_node_cache, 'rb') as dump:
+        graph_nodes = pkl.load(dump)
+    logger.debug(f'Loaded {len(graph_nodes)} nodes from graph cache...')
+    if omit_nodes:
+        graph_nodes = [n for n in graph_nodes if n.name not in omit_nodes]
+        logger.debug(f'{len(omit_nodes)} nodes to be omitted from graph, leaving {len(graph_nodes)} nodes')
 
+    connected_nodes = set()
+    for e in graph_edges:
+        connected_nodes.add(e.node_a)
+        connected_nodes.add(e.node_b)
+    logger.debug(f'{len(connected_nodes)} (connected) nodes are in the graph')
 
-def build_undirected_graph(graph_node_cache, graph_edge_cache, connect_sinks):
+    missing_nodes = [n.directed for n in graph_nodes if n.name not in connected_nodes]
+    logger.debug(f'Adding {len(missing_nodes)} singleton nodes to graph (in default orientation)')
+    graph.add_nodes_from(missing_nodes)
 
-    graph = nx.Graph()
-    with open(graph_edge_cache, 'rb') as dump:
-        graph_edges = pkl.load(dump)
-    if not connect_sinks:
-        graph.add_edges_from([e.as_nx_edge() for e in graph_edges])
-    else:
-        logger.debug('Checking if orientation loops are needed for undirected graph')
-        logger.debug('Loading cached node data...')
-        with open(graph_node_cache, 'rb') as dump:
-            graph_nodes = {n.name: n for n in pkl.load(dump)}
-        for edge in graph_edges:
-            a, b, attr = edge.as_nx_edge()
-            if needs_self_connect(graph_nodes[edge.node_a]):
-                logger.debug(f"Adding orientation self-loop for A node {edge.node_a}")
-                tmp_edge = Edge(edge.node_a, 1, edge.node_a, -1, 0, 0, edge_type='loop')
-                loop_a, loop_b, loop_attr = tmp_edge.as_nx_edge()
-                graph.add_edge(loop_a, loop_b, **loop_attr)
-            if needs_self_connect(graph_nodes[edge.node_b]):
-                logger.debug(f"Adding orientation self-loop for B node {edge.node_b}")
-                tmp_edge = Edge(edge.node_b, 1, edge.node_b, -1, 0, 0, edge_type='loop')
-                loop_a, loop_b, loop_attr = tmp_edge.as_nx_edge()
-                graph.add_edge(loop_a, loop_b, **loop_attr)
-            graph.add_edge(a, b, **attr)
-    logger.debug(f'Undirected graph built complete. Graph size: {graph.size()}')
+    graph.add_edges_from([e.as_nx_edge() for e in graph_edges])
+    if add_inverted_edges:
+        existing_edges = set(e._id for e in graph_edges)
+        for e in graph_edges:
+            inv_edge = e.revcomp()
+            if inv_edge._id in existing_edges:
+                continue
+            logger.debug(f'Adding inv/revcomp edge with ID {inv_edge._id} (from {inv_edge.a_directed} to {inv_edge.b_directed})')
+            inv_a, inv_b, inv_attr = inv_edge.as_nx_edge()
+            graph.add_edge(inv_a, inv_b, **inv_attr)
+
+    logger.debug(f'{log_type} graph built complete. Graph size: {graph.size()}')
     return graph
 
 
@@ -374,14 +353,14 @@ def concatenate_node_sequences(
                         seq1 = seq1[::-1].translate(REVCOMP_TABLE)
                 except KeyError:
                     logger.error(f'Node {node1} / {orient1} sequence is not in cache file {seq_cache_file}')
-                    raise KeyError(f'Unknown node / no sequence: {node1}')
+                    raise KeyError(f'Unknown node / no sequence: {node1} [{node_group}]')
                 try:
                     seq2 = cache[node2]
                     if orient2 == '-':
                         seq2 = seq2[::-1].translate(REVCOMP_TABLE)
                 except KeyError:
                     logger.error(f'Node {node2} / {orient2} sequence is not in cache file {seq_cache_file}')
-                    raise KeyError(f'Unknown node / no sequence: {node2}')
+                    raise KeyError(f'Unknown node / no sequence: {node2} [{node_group}]')
                 concat_seq += seq1[offset:]
                 concat_end = len(concat_seq)
                 global_table_buffer.append((
@@ -435,6 +414,7 @@ def group_path_sequences(stored_nodes, path_is_broken, num_nodes):
 def extract_single_path_sequence(graph, path_nodes, fix_path_dir, skip_steps, start_orient):
 
     last_step_complete = False
+    performed_steps = 0
     path_is_broken = False
     node_sequence = col.deque()
     queued_nodes = 0
@@ -468,7 +448,8 @@ def extract_single_path_sequence(graph, path_nodes, fix_path_dir, skip_steps, st
                 found_component = True
                 logger.debug(f'Found path connecting {ao} and {bo} of length {len(path)}')
                 if not last_step_complete:
-                    logger.debug('Last step was not completed')
+                    if performed_steps != 0:
+                        logger.debug('Last step was not completed')
                     node_sequence.append(None)
                     [node_sequence.append(p) for p in path]
                     queued_nodes += len(path)
@@ -479,6 +460,7 @@ def extract_single_path_sequence(graph, path_nodes, fix_path_dir, skip_steps, st
                     queued_nodes += len(path) - 1
                 break  # break inner loop
 
+        performed_steps += 1
         if not found_component:
             last_step_complete = False
             path_is_broken = True
@@ -519,11 +501,11 @@ def determine_better_path(path_plus, path_minus):
         # plus is not broken
         logger.debug('Selecting forward path as final / is complete')
         selected = [path_plus, None]
-    elif path_plus[-2] > path_minus[-2]:
-        logger.debug('Selecting forward path as final / is larger')
-        selected = [path_plus, None]
     elif path_plus[-2] < path_minus[-2]:
-        logger.debug('Selecting reverse path as final / is larger')
+        logger.debug('Selecting forward path as final / is shorter')
+        selected = [path_plus, None]
+    elif path_plus[-2] > path_minus[-2]:
+        logger.debug('Selecting reverse path as final / is shorter')
         selected = [None, path_minus]
     else:
         # both paths have the same size, check if they cover different
@@ -540,13 +522,13 @@ def determine_better_path(path_plus, path_minus):
     return selected
 
 
-def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_file, undirected_graph, connect_sinks, fix_path_dir, skip_steps):
+def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_file, undirected_graph, add_inverted_edges, fix_path_dir, skip_steps):
 
     logger.debug("Building graph from cache...")
     if undirected_graph:
-        graph = build_undirected_graph(cache_files['nodes-graph'], cache_files['edges-graph'], connect_sinks)
+        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, directed=False)
     else:
-        graph = build_directed_graph(cache_files['nodes-graph'], cache_files['edges-graph'], connect_sinks)
+        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, directed=True)
 
     global_fasta_buffer = io.StringIO()
     global_table_buffer = []
@@ -627,21 +609,23 @@ def run_extract_seq(args):
         path_spec,
         cache_files['sequences'],
         args.undirected_graph,
-        args.connect_sinks,
+        args.add_inverted_edges,
         args.fix_path_direction,
         args.skip_steps
     )
 
-    with open(args.output_fasta, 'w') as dump:
-        _ = dump.write(fasta_buffer.getvalue())
-    logger.debug('FASTA dumped')
+    if len(fasta_buffer.getvalue()) > 0:
 
-    path_table = pd.DataFrame.from_records(
-        table_buffer,
-        columns=['path', 'node', 'group_start', 'group_end', 'seq_length', 'offset', 'seq_start', 'seq_end']
-    )
-    logger.debug(f'Created path table of size: {path_table.shape}')
-    path_table.to_csv(args.output_fasta.with_suffix('.paths.tsv'), sep='\t', header=True, index=False)
+        with open(args.output_fasta, 'w') as dump:
+            _ = dump.write(fasta_buffer.getvalue())
+        logger.debug('FASTA dumped')
+
+        path_table = pd.DataFrame.from_records(
+            table_buffer,
+            columns=['path', 'node', 'group_start', 'group_end', 'seq_length', 'offset', 'seq_start', 'seq_end']
+        )
+        logger.debug(f'Created path table of size: {path_table.shape}')
+        path_table.to_csv(args.output_fasta.with_suffix('.paths.tsv'), sep='\t', header=True, index=False)
 
     return
 

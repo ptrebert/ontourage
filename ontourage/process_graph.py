@@ -435,8 +435,11 @@ def annotate_graph_nodes(nodes, edges, jobs):
         degrees[e.node_a][('out', e.a_orientation)] += 1
         degrees[e.node_b][('in', e.b_orientation)] += 1
     logger.debug('Updating node information...')
-    # networkx does not count isolated nodes as connected components
-    # manually add CC IDs for these cases
+    # singleton (linear, i.e. also no self-reflexive edge) nodes
+    # are not recognized as connected component on their own;
+    # the below loop corrects for that, but only works because
+    # "degrees" returns an empty "Counter" object for missing
+    # nodes, which in turn defaults to zero for all edge queries
     manual_cc_id = cc_id + 1
     for n in nodes:
         n.set_node_degree(degrees[n.name])

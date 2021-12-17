@@ -9,6 +9,7 @@ class Node:
     name: str
     length: int = 0
     orientation: int = 1
+    directed: str = field(init=False, default=None)
     sequence_md5: str = None
     # attributes related to graph topology
     # cc = connected component
@@ -51,6 +52,8 @@ class Node:
             raise ValueError(f"Sequence MD5 checksum is set, but node [sequence] length is 0: [MD5] {self.sequence_md5}")
         if self.sequence_md5 is None:
             self.sequence_md5 = 'n/a'  # avoid that None needs to be dumped as DataFrame/HDF
+        self.directed = self.name + ('+' if self.orientation > 0 else '-')
+        return
 
     def add_sequence_composition(self, sequence):
         self.sequence_md5 = hlib.md5(sequence.encode('ascii')).hexdigest()
@@ -89,6 +92,10 @@ class Node:
         return
 
     def set_node_degree(self, edge_counts):
+        """
+        edge_counts must be a collections.Counter
+        to work even for nodes that have no edges
+        """
         self.deg_out_plus = edge_counts[('out', 1)]
         self.deg_out_minus = edge_counts[('out', -1)]
         self.deg_in_plus = edge_counts[('in', 1)]
@@ -108,8 +115,10 @@ class Edge:
     _id: str = field(init=False, default=None)
     node_a: str
     a_orientation: int
+    a_directed: str = field(init=False, default=None)
     node_b: str
     b_orientation: int
+    b_directed: str = field(init=False, default=None)
     length: int
     quality: int
     read_name: str = 'undefined'
@@ -118,17 +127,21 @@ class Edge:
     error_type: str = 'undefined'
 
     def __post_init__(self):
+
+        if self.a_orientation not in [1, -1]:
+            raise ValueError(f"Node A orientation must be 1 or -1, and not {self.a_orientation}")
+        if self.b_orientation not in [1, -1]:
+            raise ValueError(f"Node B orientation must be 1 or -1, and not {self.b_orientation}")
+        if self.edge_type not in ['pair', 'loop', 'revcomp']:
+            raise ValueError(f"Type of edge must be 'pair' or 'loop', and not {self.edge_type}")
         edge_id = ''.join(
             (str(x) for x in [self.node_a, self.a_orientation, self.node_b, self.b_orientation])
         )
         edge_hash = hlib.md5(edge_id.encode('ascii')).hexdigest()
         self._id = edge_hash
-        if self.a_orientation not in [1, -1]:
-            raise ValueError(f"Node A orientation must be 1 or -1, and not {self.a_orientation}")
-        if self.b_orientation not in [1, -1]:
-            raise ValueError(f"Node B orientation must be 1 or -1, and not {self.b_orientation}")
-        if self.edge_type not in ['pair', 'loop']:
-            raise ValueError(f"Type of edge must be 'pair' or 'loop', and not {self.edge_type}")
+        self.a_directed = self.node_a + ('+' if self.a_orientation > 0 else '-')
+        self.b_directed = self.node_b + ('+' if self.b_orientation > 0 else '-')
+        return
 
     def as_dict(self):
         return asdict(self)
@@ -145,23 +158,19 @@ class Edge:
         node_a = self.node_a
         node_b = self.node_b
         if oriented:
-            node_a = f"{node_a}{'+' if self.a_orientation > 0 else '-'}"
-            node_b = f"{node_b}{'+' if self.b_orientation > 0 else '-'}"
+            node_a = self.a_directed
+            node_b = self.b_directed
         return node_a, node_b, edge_attributes
 
-    def flip(self):
+    def revcomp(self):
+        # invert edge direction and flip
+        # strand sense for both nodes
+        a_flip_sense = self.a_orientation * -1
+        b_flip_sense = self.b_orientation * -1
         e = Edge(
-            self.node_b, self.b_orientation, self.node_a, self.a_orientation,
+            self.node_b, b_flip_sense, self.node_a, a_flip_sense,
             self.length, self.quality, self.read_name,
-            self.edge_source, self.edge_type, self.error_type
-        )
-        return e
-
-    def cross_flip(self):
-        e = Edge(
-            self.node_b, self.a_orientation, self.node_a, self.b_orientation,
-            self.length, self.quality, self.read_name,
-            self.edge_source, self.edge_type, self.error_type
+            self.edge_source, 'revcomp', self.error_type
         )
         return e
 
