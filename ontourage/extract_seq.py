@@ -71,14 +71,28 @@ def extract_seq_cli_parser(module_parsers):
     )
 
     io_group.add_argument(
+        "--omit-nodes",
+        "-on",
+        type=str,
+        nargs="*",
+        dest="omit_nodes",
+        metavar="NODE",
+        help="Specify nodes to omit during graph building. Edges involving any of these nodes "
+             "will be omitted. Default: None"
+    )
+
+    cwd = pl.Path.cwd()
+    io_group.add_argument(
         "--output-fasta",
         "-of",
         type=lambda x: pl.Path(x).resolve().absolute(),
         dest="output_fasta",
-        required=True,
+        default=cwd,
         metavar="OUTPUT-FASTA",
         help="Specify the path to the output FASTA file. If the option '--split-fasta' is set, this "
-             "is interpreted as a folder path."
+             "is interpreted as a folder path. If no output is specified, output is written "
+             "to the current working directory using the cache prefix as file name. "
+             f"Default: {cwd}"
     )
 
     io_group.add_argument(
@@ -238,10 +252,14 @@ def check_required_cache_files(cache_folder, cache_prefix, required_suffix, requ
     return required_caches
 
 
-def build_any_graph(graph_node_cache, graph_edge_cache, add_inverted_edges, directed):
+def build_any_graph(graph_node_cache, graph_edge_cache, add_inverted_edges, omit_nodes, directed):
 
-    # for the future...
-    omit_nodes = []
+    if len(omit_nodes) == 1 and ',' in omit_nodes[0]:
+        logger.debug("Found comma in 'omit_nodes' list; I assume the list of nodes is comma-separated, "
+                     "and not whitespace-separated. Fixing that now...")
+        omit_nodes = omit_nodes[0].split(',')
+
+    logger.debug(f"Building graph with following nodes omitted: {omit_nodes}")
 
     if directed:
         graph = nx.DiGraph()
@@ -318,7 +336,7 @@ def add_node_orientation(node_a, node_b, fix_path_dir, start_orient):
 
             ]
     if not fix_path_dir:
-        inv_oriented_nodes = [(b, a) for (a, b) in oriented_nodes]
+        inv_oriented_nodes = oriented_nodes[::-1]
         oriented_nodes.extend(inv_oriented_nodes)
     return oriented_nodes
 
@@ -422,17 +440,21 @@ def extract_single_path_sequence(graph, path_nodes, fix_path_dir, skip_steps, st
     init_orientation = start_orient
 
     for node_a, node_b in nx.utils.pairwise(path_nodes):
-        logger.debug(f'Searching for path connecting pair {node_a} / {node_b}')
+        logger.debug(f'Searching for path connecting node pair {node_a} / {node_b}')
         for ao, bo in add_node_orientation(node_a, node_b, fix_path_dir, init_orientation):
-            # if we found a path up to node_a in the last iteration,
+            # if we found a path to node_b in the last iteration,
             # make sure to start the traversal at the identical node now
             # for proper continuity of the path sequence
             if last_step_complete:
-                last_node_a = node_sequence.pop()
-                if last_node_a != ao:
-                    node_sequence.append(last_node_a)
+                logger.debug("Last step completed; implies fixed start node for this path search")
+                last_node_b = node_sequence.pop()
+                logger.debug(f"Last node found/selected was {last_node_b} --- comparing to current start {ao}")
+                if last_node_b != ao:
+                    logger.debug("Incompatible orientation, skipping")
+                    node_sequence.append(last_node_b)
                     continue
-                node_sequence.append(last_node_a)
+                logger.debug("Matched orientation, starting path search")
+                node_sequence.append(last_node_b)
             found_component = False
             try:
                 # TODO allow other strategies
@@ -522,13 +544,13 @@ def determine_better_path(path_plus, path_minus):
     return selected
 
 
-def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_file, undirected_graph, add_inverted_edges, fix_path_dir, skip_steps):
+def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_file, undirected_graph, add_inverted_edges, omit_nodes, fix_path_dir, skip_steps):
 
     logger.debug("Building graph from cache...")
     if undirected_graph:
-        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, directed=False)
+        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, omit_nodes, directed=False)
     else:
-        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, directed=True)
+        graph = build_any_graph(cache_files['nodes-graph'], cache_files['edges-graph'], add_inverted_edges, omit_nodes, directed=True)
 
     global_fasta_buffer = io.StringIO()
     global_table_buffer = []
@@ -547,7 +569,9 @@ def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_fil
                 logger.warning(f"No path found starting from node {start}")
                 traversals = [None, None]
         else:
+            logger.debug(f"Start node {start} is not oriented")
             try:
+                logger.debug("Starting from forward orientation")
                 complete_path_plus = extract_single_path_sequence(
                     graph, path_nodes,
                     fix_path_dir, skip_steps, '+'
@@ -556,6 +580,7 @@ def extract_path_sequences(cache_files, path_spec_iter, path_spec, seq_cache_fil
                 logger.warning(f"No path found starting from node {start} in forward orientation")
                 complete_path_plus = None
             try:
+                logger.debug("Starting from reverse orientation")
                 complete_path_minus = extract_single_path_sequence(
                     graph, path_nodes,
                     fix_path_dir, skip_steps, '-'
@@ -610,9 +635,15 @@ def run_extract_seq(args):
         cache_files['sequences'],
         args.undirected_graph,
         args.add_inverted_edges,
+        args.omit_nodes,
         args.fix_path_direction,
         args.skip_steps
     )
+
+    if args.output_fasta == pl.Path.cwd():
+        logger.debug('FASTA output path is given as current working directory, using cache prefix as file name...')
+        out_fasta = pl.Path.cwd() / pl.Path(args.cache_prefix + '.fasta')
+        setattr(args, 'output_fasta', out_fasta)
 
     if len(fasta_buffer.getvalue()) > 0:
 
