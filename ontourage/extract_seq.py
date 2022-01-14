@@ -254,7 +254,7 @@ def check_required_cache_files(cache_folder, cache_prefix, required_suffix, requ
 
 def build_any_graph(graph_node_cache, graph_edge_cache, add_inverted_edges, omit_nodes, directed):
 
-    if len(omit_nodes) == 1 and ',' in omit_nodes[0]:
+    if omit_nodes is not None and len(omit_nodes) == 1 and ',' in omit_nodes[0]:
         logger.debug("Found comma in 'omit_nodes' list; I assume the list of nodes is comma-separated, "
                      "and not whitespace-separated. Fixing that now...")
         omit_nodes = omit_nodes[0].split(',')
